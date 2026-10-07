@@ -10,26 +10,26 @@ import (
 
 func WakeOnLan(context *gin.Context) {
 
-	var wolPacket WolPacket
+	var wolPayload WolPayload
 
-	if err := context.BindJSON(&wolPacket); err != nil {
+	if err := context.BindJSON(&wolPayload); err != nil {
 		return
 	}
 
 	client, err := extwol.NewClient()
 	if err != nil {
-		context.JSON(http.StatusInternalServerError, gin.H{"message": "Erreur d'initialisation du socket réseau"})
+		context.JSON(http.StatusInternalServerError, gin.H{"message": "Error initializing the network socket"})
 		return
 	}
 	defer client.Close()
 
-	parsedMACAdress, err := net.ParseMAC(wolPacket.MACAdress)
+	parsedMACAdress, err := net.ParseMAC(wolPayload.MACAdress)
 	if err != nil {
 		context.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request body"})
 		return
 	}
 
-	if err := SendMagicPacket(wolPacket.BroadcastAddress, parsedMACAdress); err != nil {
+	if err := SendMagicPacket(wolPayload.BroadcastAddress, parsedMACAdress); err != nil {
 		context.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
