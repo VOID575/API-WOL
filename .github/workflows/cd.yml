@@ -1,0 +1,40 @@
+name: deploy-api
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.16'
+
+      - name: Build binary
+        run: env CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o api-wol ./cmd/api
+
+      - name: Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+
+      - name: Deploy and Restart
+        env:
+          IP: ${{ secrets.GATEWAY_IP }}
+          USER: ${{ secrets.GATEWAY_USER }}
+          SSH_KEY: ${{ secrets.GATEWAY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          
+          scp -o StrictHostKeyChecking=no -P 8022 api-wol $USER@$IP:~/api-wol
+          
+          ssh -o StrictHostKeyChecking=no -p 8022 $USER@$IP "pkill -f api-wol || true && nohup ~/api-wol > ~/api.log 2>&1 &"
