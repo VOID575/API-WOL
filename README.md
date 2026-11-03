@@ -1,101 +1,101 @@
 # API-WOL — Remote Wake-on-LAN & Shutdown API
 
-API REST légère et performante développée en **Go** (avec le framework [Gin](https://github.com/gin-gonic/gin)), permettant d'administrer l'alimentation de machines distantes :
-1. **Réveil à distance (Wake-on-LAN)** via l'envoi de Magic Packets UDP sur le réseau local.
-2. **Extinction propre à distance (Shutdown)** sécurisée à travers **Tailscale SSH** pour les environnements **Linux** et **Windows**.
+A lightweight and fast REST API written in **Go** (using the [Gin](https://github.com/gin-gonic/gin) framework) designed to manage the power state of remote machines:
+1. **Remote Wake-up (Wake-on-LAN)** via UDP Magic Packets broadcasted over the local area network.
+2. **Clean Remote Shutdown** securely executed via **Tailscale SSH** for both **Linux** and **Windows** hosts.
 
 ---
 
-## Sommaire
+## Table of Contents
 
-- [Architecture et Fonctionnement](#-architecture-et-fonctionnement)
-- [Prérequis](#-prérequis)
-- [Configuration Tailscale (Tags, ACLs et SSH)](#-configuration-tailscale-tags-acls-et-ssh)
-  - [1. Pourquoi utiliser des Tags Tailscale ?](#1-pourquoi-utiliser-des-tags-tailscale-)
-  - [2. Déclaration des Tags et ACLs Tailscale](#2-déclaration-des-tags-et-acls-tailscale)
-  - [3. Activation de Tailscale SSH sur les machines cibles](#3-activation-de-tailscale-ssh-sur-les-machines-cibles)
-  - [4. Permissions d'extinction sur les cibles](#4-permissions-dextinction-sur-les-cibles)
-- [Installation et Démarrage](#-installation-et-démarrage)
-  - [Compilation et exécution](#compilation-et-exécution)
-  - [Note sur l'adresse d'écoute (`localhost` vs Tailscale)](#note-sur-ladresse-découte-localhost-vs-tailscale)
-  - [Déploiement en service `systemd`](#déploiement-en-service-systemd)
-- [Référence des Appels API](#-référence-des-appels-api)
-  - [1. Réveiller une machine (`POST /wakeonlan`)](#1-réveiller-une-machine-post-wakeonlan)
-  - [2. Éteindre une machine (`POST /shutdown`)](#2-éteindre-une-machine-post-shutdown)
-- [Structure du Projet](#-structure-du-projet)
-- [Dépannage & FAQ](#-dépannage--faq)
+- [Architecture & How It Works](#-architecture--how-it-works)
+- [Prerequisites](#-prerequisites)
+- [Tailscale Configuration (Tags, ACLs & SSH)](#-tailscale-configuration-tags-acls--ssh)
+  - [1. Why Use Tailscale Tags?](#1-why-use-tailscale-tags)
+  - [2. Defining Tags and Tailscale ACLs](#2-defining-tags-and-tailscale-acls)
+  - [3. Enabling Tailscale SSH on Target Machines](#3-enabling-tailscale-ssh-on-target-machines)
+  - [4. Shutdown Permissions on Targets](#4-shutdown-permissions-on-targets)
+- [Installation & Quick Start](#-installation--quick-start)
+  - [Build and Run](#build-and-run)
+  - [Network Binding Note (`localhost` vs Tailscale)](#network-binding-note-localhost-vs-tailscale)
+  - [Deployment with `systemd`](#deployment-with-systemd)
+- [API Reference](#-api-reference)
+  - [1. Wake a Machine (`POST /wakeonlan`)](#1-wake-a-machine-post-wakeonlan)
+  - [2. Shut Down a Machine (`POST /shutdown`)](#2-shut-down-a-machine-post-shutdown)
+- [Project Structure](#-project-structure)
+- [Troubleshooting & FAQ](#-troubleshooting--faq)
 
 ---
 
-## Architecture et Fonctionnement
+## Architecture & How It Works
 
 ```
                                       +---------------------------------------------+
-                                      |            Réseau Local (LAN)               |
+                                      |            Local Area Network (LAN)         |
                                       |                                             |
                          [Magic Packet]     +--------------------------------+      |
-                     +--------------------> | Machine Cible (Éteinte en veille)     |
+                     +--------------------> | Target Machine (Sleeping/Off)  |      |
                      |   (UDP Broadcast)    | MAC: AA:BB:CC:DD:EE:FF         |      |
                      |                      +--------------------------------+      |
 +-------------+      |                                                              |
-| Client HTTP | ---> | [ API-WOL (Go / Gin) ]                                       |
-+-------------+      | (Hôte Tailscale)                                             |
+| HTTP Client | ---> | [ API-WOL (Go / Gin) ]                                       |
++-------------+      | (Tailscale Host)                                             |
                      |                                                              |
                      +--------------------------------------------------------------+
                      |                     Tailnet (Tailscale)                      |
                      |                                                              |
                      | [tailscale ssh]      +--------------------------------+      |
-                     +--------------------> | Machine Cible (Allumée)        |      |
+                     +--------------------> | Target Machine (Powered on)    |      |
                                             | IP: 100.x.y.z (Linux / Windows)|      |
                                             +--------------------------------+      |
                                       +---------------------------------------------+
 ```
 
-### Comment ça marche ?
-- **Wake-on-LAN (`/wakeonlan`)** : L'API génère un paquet magique constitué de 6 octets `0xFF` suivis de 16 répétitions de l'adresse MAC cible, puis l'émet en UDP broadcast sur le sous-réseau local via la bibliothèque `github.com/mdlayher/wol`. La machine hôte de l'API doit être connectée physiquement ou logiquement au même réseau local (broadcast domain) que la machine à réveiller.
-- **Extinction (`/shutdown`)** : L'API déclenche une commande SSH via la CLI Tailscale (`tailscale ssh <user>@<ip> <command>`). Selon l'OS spécifié dans la requête :
-  - **Linux** : `sudo shutdown -h now`
-  - **Windows** : `shutdown /s /t 0 /f`
-  L'API gère le code de retour SSH `255` (qui se produit naturellement lorsque la machine cible coupe la connexion réseau lors de son extinction immédiate) et le traite comme un succès.
+### How Does It Work?
+- **Wake-on-LAN (`/wakeonlan`)**: The API builds a magic packet consisting of 6 `0xFF` bytes followed by 16 repetitions of the target MAC address, and broadcasts it over UDP to the specified network subnet using `github.com/mdlayher/wol`. The API host machine must be physically or logically connected to the same local network (broadcast domain) as the target machine.
+- **Shutdown (`/shutdown`)**: The API executes a remote SSH command via the Tailscale CLI (`tailscale ssh <user>@<ip> <command>`). Depending on the specified target OS:
+  - **Linux**: `sudo shutdown -h now`
+  - **Windows**: `shutdown /s /t 0 /f`
+  The API explicitly handles SSH exit code `255` (which occurs when the target machine cuts the SSH connection abruptly during immediate shutdown) and treats it as a successful completion.
 
 ---
 
-## Prérequis
+## Prerequisites
 
-1. **Serveur hébergeant l'API** :
-   - [Go](https://go.dev/) 1.22 ou supérieur (le projet utilise Go 1.26).
-   - [Tailscale](https://tailscale.com/) installé, connecté au tailnet et fonctionnel en ligne de commande.
-   - Présence sur le réseau local Ethernet/Wi-Fi des cibles pour le Wake-on-LAN.
-2. **Machines cibles** :
-   - **Pour Wake-on-LAN** : Carte mère et carte réseau configurées avec le WoL activé dans le BIOS/UEFI et dans l'OS (paramètres d'économie d'énergie).
-   - **Pour Shutdown** : Client Tailscale actif avec Tailscale SSH activé (`--ssh`).
+1. **API Host Machine**:
+   - [Go](https://go.dev/) 1.22+ (tested with Go 1.26).
+   - [Tailscale](https://tailscale.com/) installed, authenticated, and running.
+   - Connected to the local Ethernet/Wi-Fi subnet of the target machines for Wake-on-LAN.
+2. **Target Machines**:
+   - **For Wake-on-LAN**: Motherboard and Network Interface Card (NIC) with Wake-on-LAN enabled in BIOS/UEFI and OS power management settings.
+   - **For Shutdown**: Tailscale installed and running with Tailscale SSH enabled (`--ssh`).
 
 ---
 
-## Configuration Tailscale (Tags, ACLs et SSH)
+## Tailscale Configuration (Tags, ACLs & SSH)
 
-Tailscale SSH permet d'authentifier et d'autoriser les connexions SSH en utilisant les identités de votre Tailnet, sans avoir à gérer manuellement de clés SSH publiques/privées.
+Tailscale SSH enables secure authentication and authorization through Tailnet identities without manually managing SSH key pairs.
 
-### 1. Pourquoi utiliser des Tags Tailscale ?
+### 1. Why Use Tailscale Tags?
 
-Par défaut, les machines Tailscale sont associées à un utilisateur individuel et leurs clés de session expirent périodiquement. En utilisant des **Tags** (ex. `tag:api-wol` et `tag:targets`) :
-- La machine hébergeant l'API devient un nœud système impersonnel (*tagged node*).
-- Les clés d'authentification associées aux tags n'expirent pas.
-- Vous définissez des règles d'accès strictes et granulaires dans la politique ACL.
+By default, Tailscale nodes are tied to individual user accounts and their session keys expire periodically. By assigning **Tags** (e.g. `tag:api-wol` and `tag:targets`):
+- The API host becomes an impersonal system node (*tagged node*).
+- Authentication keys associated with tags do not expire.
+- You can establish granular, role-based access rules in the ACL policy.
 
-### 2. Déclaration des Tags et ACLs Tailscale
+### 2. Defining Tags and Tailscale ACLs
 
-Rendez-vous dans la console d'administration Tailscale (**Admin Console > Access Controls**) et configurez votre fichier de configuration de politique (HuJSON) :
+Open your Tailscale admin console (**Admin Console > Access Controls**) and update your HuJSON policy:
 
 ```jsonc
 {
-  // 1. Définition des propriétaires des tags
+  // 1. Define tag ownership
   "tagOwners": {
     "tag:api-wol": ["autogroup:admin"],
     "tag:targets": ["autogroup:admin"]
   },
 
-  // 2. Règles réseau standard (autoriser l'API à joindre les cibles)
+  // 2. Standard network ACLs (allow API host to reach target machines)
   "acls": [
     {
       "action": "accept",
@@ -104,110 +104,110 @@ Rendez-vous dans la console d'administration Tailscale (**Admin Console > Access
     }
   ],
 
-  // 3. Règles Tailscale SSH
+  // 3. Tailscale SSH Access Rules
   "ssh": [
     {
       "action": "accept",
       "src": ["tag:api-wol"],
       "dst": ["tag:targets"],
-      "users": ["root", "user", "autogroup:nonroot"],
-      "checkPeriod": "0s" // Pas de ré-authentification interactive (requis pour un appel d'API)
+      "users": ["root", "valentin", "autogroup:nonroot"],
+      "checkPeriod": "0s" // Disables interactive check prompt (essential for headless API calls)
     }
   ]
 }
 ```
 
 > [!IMPORTANT]
-> L'instruction `"checkPeriod": "0s"` (ou l'action `"accept"` directe) est cruciale : elle garantit que la connexion SSH ne demandera pas de confirmation via navigateur ou URL de validation, ce qui bloquerait l'appel HTTP de l'API.
+> The setting `"checkPeriod": "0s"` (or direct `"accept"` action) is crucial: it prevents Tailscale from asking for interactive browser verification URLs, which would block automated HTTP requests.
 
-#### Assigner les tags aux machines
+#### Assigning Tags to Machines
 
-- **Sur la machine hôte de l'API** :
+- **On the API Host Machine**:
   ```bash
   sudo tailscale up --advertise-tags=tag:api-wol
   ```
-- **Sur les machines cibles (à éteindre)** :
+- **On Target Machines (to be shut down)**:
   ```bash
   sudo tailscale up --advertise-tags=tag:targets --ssh
   ```
 
 ---
 
-### 3. Activation de Tailscale SSH sur les machines cibles
+### 3. Enabling Tailscale SSH on Target Machines
 
-Pour que la machine accepte les connexions gérées par Tailscale SSH, elle doit être démarrée avec le flag `--ssh` :
+For targets to accept incoming connections handled by Tailscale SSH, they must start with the `--ssh` flag:
 
 ```bash
 sudo tailscale up --ssh --accept-routes
 ```
 
-Vérifiez l'état du démon sur la machine cible :
+Verify the status on the target machine:
 ```bash
 tailscale status
 ```
 
 ---
 
-### 4. Permissions d'extinction sur les cibles
+### 4. Shutdown Permissions on Targets
 
-#### Pour une cible Linux
-La commande exécutée est `sudo shutdown -h now`. L'utilisateur configuré dans la requête doit pouvoir lancer `shutdown` sans mot de passe.
+#### For Linux Targets
+The shutdown command executed is `sudo shutdown -h now`. The specified remote user must have permissions to run `shutdown` without password prompts.
 
-Créez une règle sudoers dédiée sur la cible Linux (ex. `/etc/sudoers.d/tailscale-shutdown`) :
+Create a sudoers drop-in file on the target Linux system (e.g., `/etc/sudoers.d/tailscale-shutdown`):
 ```bash
-echo "user ALL=(ALL) NOPASSWD: /sbin/shutdown, /usr/sbin/shutdown" | sudo tee /etc/sudoers.d/tailscale-shutdown
+echo "valentin ALL=(ALL) NOPASSWD: /sbin/shutdown, /usr/sbin/shutdown" | sudo tee /etc/sudoers.d/tailscale-shutdown
 sudo chmod 0440 /etc/sudoers.d/tailscale-shutdown
 ```
-*(Remplacez `user` par l'utilisateur que vous spécifierez dans le JSON de l'API).*
+*(Replace `valentin` with the username you provide in your API request).*
 
-#### Pour une cible Windows
-La commande exécutée est `shutdown /s /t 0 /f`.
-- L'utilisateur spécifié dans la requête doit être un compte membre du groupe **Administrateurs** local ou disposer du privilège `SeShutdownPrivilege`.
-- Tailscale SSH sous Windows se connectera sous ce compte local.
+#### For Windows Targets
+The command executed is `shutdown /s /t 0 /f`.
+- The user specified in the API payload must be a member of the local **Administrators** group or have the `SeShutdownPrivilege` policy assigned.
+- Tailscale SSH on Windows will run under this local user account.
 
 ---
 
-## Installation et Démarrage
+## Installation & Quick Start
 
-### Compilation et exécution
+### Build and Run
 
-1. **Cloner le projet et installer les dépendances** :
+1. **Clone the repository and download dependencies**:
    ```bash
-   git clone <url-du-repo>
+   git clone <repo-url>
    cd API-WOL
    go mod download
    ```
 
-2. **Lancement en mode développement** :
+2. **Run in development mode**:
    ```bash
    go run cmd/api/main.go
    ```
 
-3. **Compilation d'un binaire de production** :
+3. **Compile a production binary**:
    ```bash
    go build -o api-wol cmd/api/main.go
    ./api-wol
    ```
 
-### Note sur l'adresse d'écoute (`localhost` vs Tailscale)
+### Network Binding Note (`localhost` vs Tailscale)
 
-Par défaut, `cmd/api/main.go` écoute sur `localhost:8080` :
+By default, `cmd/api/main.go` binds to `localhost:8080`:
 ```go
 router.Run("localhost:8080")
 ```
-Si vous souhaitez appeler cette API depuis d'autres appareils connectés à votre Tailnet ou votre réseau local, modifiez cette ligne pour écouter sur toutes les interfaces :
+If you wish to access this API from other devices in your Tailnet or local network, update the bind address to listen on all interfaces:
 ```go
 router.Run("0.0.0.0:8080")
 ```
-ou spécifiquement sur l'adresse IP Tailscale du serveur (ex. `100.x.y.z:8080`).
+or bind specifically to your machine's Tailscale IP address (e.g., `100.x.y.z:8080`).
 
 ---
 
-### Déploiement en service `systemd`
+### Deployment with `systemd`
 
-Pour maintenir l'API active en arrière-plan et la relancer automatiquement au démarrage du système :
+To run the API as a background daemon that automatically starts on system boot:
 
-1. Créez le fichier de service `/etc/systemd/system/api-wol.service` :
+1. Create a service file `/etc/systemd/system/api-wol.service`:
    ```ini
    [Unit]
    Description=API-WOL Service
@@ -216,9 +216,9 @@ Pour maintenir l'API active en arrière-plan et la relancer automatiquement au d
 
    [Service]
    Type=simple
-   User=user
-   WorkingDirectory=/home/user/linux_extension/API-WOL
-   ExecStart=/home/user/linux_extension/API-WOL/api-wol
+   User=valentin
+   WorkingDirectory=/home/valentin/linux_extension/API-WOL
+   ExecStart=/home/valentin/linux_extension/API-WOL/api-wol
    Restart=always
    RestartSec=5
    Environment=GIN_MODE=release
@@ -227,7 +227,7 @@ Pour maintenir l'API active en arrière-plan et la relancer automatiquement au d
    WantedBy=multi-user.target
    ```
 
-2. Activez et démarrez le service :
+2. Reload `systemd` and enable the service:
    ```bash
    sudo systemctl daemon-reload
    sudo systemctl enable --now api-wol.service
@@ -236,27 +236,27 @@ Pour maintenir l'API active en arrière-plan et la relancer automatiquement au d
 
 ---
 
-## Référence des Appels API
+## API Reference
 
-### 1. Réveiller une machine (`POST /wakeonlan`)
+### 1. Wake a Machine (`POST /wakeonlan`)
 
-Émet un paquet magique Wake-on-LAN sur le réseau broadcast vers l'adresse MAC cible.
+Broadcasts a Wake-on-LAN Magic Packet to wake up a sleeping or powered-off machine.
 
-- **Méthode** : `POST`
-- **Route** : `/wakeonlan`
-- **Headers** : `Content-Type: application/json`
+- **Method**: `POST`
+- **Path**: `/wakeonlan`
+- **Headers**: `Content-Type: application/json`
 
-#### Paramètres du corps de requête (JSON)
+#### Request Body Parameters (JSON)
 
-| Champ | Type | Obligatoire | Description | Exemple |
+| Field | Type | Required | Description | Example |
 | :--- | :--- | :---: | :--- | :--- |
-| `broadcast_address` | String | Oui | Adresse IP de broadcast du sous-réseau avec le port UDP (généralement port 9 ou 7) | `"192.168.1.255:9"` |
-| `mac_address` | String | Oui | Adresse MAC de la carte réseau de la machine cible (séparée par des `:` ou `-`) | `"AA:BB:CC:DD:EE:FF"` |
+| `broadcast_address` | String | Yes | Subnet broadcast IP address including UDP port (usually port 9 or 7) | `"192.168.1.255:9"` |
+| `mac_address` | String | Yes | Target machine MAC address (separated by `:` or `-`) | `"AA:BB:CC:DD:EE:FF"` |
 
 > [!NOTE]
-> Veillez à bien spécifier le port dans `broadcast_address` (ex: `:9`). Si votre réseau utilise le masque `255.255.255.0` sur `192.168.1.0/24`, l'adresse de broadcast est `192.168.1.255:9`. Pour du broadcast global (si supporté par votre routeur), vous pouvez utiliser `255.255.255.255:9`.
+> Make sure to specify the port in `broadcast_address` (e.g. `:9`). If your network uses a `255.255.255.0` netmask on `192.168.1.0/24`, the broadcast address is `192.168.1.255:9`. For global broadcast (if supported by your router), use `255.255.255.255:9`.
 
-#### Exemple d'appel cURL
+#### cURL Example
 
 ```bash
 curl -X POST http://localhost:8080/wakeonlan \
@@ -267,7 +267,7 @@ curl -X POST http://localhost:8080/wakeonlan \
   }'
 ```
 
-#### Exemple PowerShell
+#### PowerShell Example
 
 ```powershell
 $body = @{
@@ -278,22 +278,22 @@ $body = @{
 Invoke-RestMethod -Uri "http://localhost:8080/wakeonlan" -Method POST -ContentType "application/json" -Body $body
 ```
 
-#### Réponses possibles
+#### Responses
 
-- **`200 OK`** : Paquet envoyé avec succès.
+- **`200 OK`**: Magic packet successfully sent.
   ```json
   {
     "message": "Magic packet sent successfully",
     "target": "00:11:22:33:44:55"
   }
   ```
-- **`400 Bad Request`** : Adresse MAC invalide ou payload JSON incorrect.
+- **`400 Bad Request`**: Invalid MAC address or malformed JSON payload.
   ```json
   {
     "message": "Invalid request body"
   }
   ```
-- **`500 Internal Server Error`** : Erreur réseau lors de l'ouverture du socket ou de l'envoi du paquet.
+- **`500 Internal Server Error`**: Socket initialization error or network failure.
   ```json
   {
     "message": "Error initializing the network socket"
@@ -302,24 +302,24 @@ Invoke-RestMethod -Uri "http://localhost:8080/wakeonlan" -Method POST -ContentTy
 
 ---
 
-### 2. Éteindre une machine (`POST /shutdown`)
+### 2. Shut Down a Machine (`POST /shutdown`)
 
-Ordonne l'extinction immédiate d'une machine cible via Tailscale SSH.
+Executes a remote power-off command on a target host via Tailscale SSH.
 
-- **Méthode** : `POST`
-- **Route** : `/shutdown`
-- **Headers** : `Content-Type: application/json`
+- **Method**: `POST`
+- **Path**: `/shutdown`
+- **Headers**: `Content-Type: application/json`
 
-#### Paramètres du corps de requête (JSON)
+#### Request Body Parameters (JSON)
 
-| Champ | Type | Obligatoire | Description | Exemples |
+| Field | Type | Required | Description | Examples |
 | :--- | :--- | :---: | :--- | :--- |
-| `ip` | String | Oui | Adresse IP Tailscale (100.x.y.z) ou MagicDNS de la machine cible | `"100.85.120.45"` ou `"mon-pc.tailnet-xyz.ts.net"` |
-| `port` | String | Oui | Port SSH (ex. `"22"`) | `"22"` |
-| `user` | String | Oui | Nom d'utilisateur sur la machine distante | `"user"`, `"root"`, `"admin"` |
-| `os` | String | Oui | Système d'exploitation cible (`"linux"` ou `"windows"`) | `"linux"`, `"windows"` |
+| `ip` | String | Yes | Target Tailscale IP (100.x.y.z) or MagicDNS hostname | `"100.85.120.45"` or `"my-pc.tailnet-xyz.ts.net"` |
+| `port` | String | Yes | SSH port (e.g. `"22"`) | `"22"` |
+| `user` | String | Yes | Remote target user account name | `"valentin"`, `"root"`, `"admin"` |
+| `os` | String | Yes | Target operating system (`"linux"` or `"windows"`) | `"linux"`, `"windows"` |
 
-#### Exemple d'appel cURL (Machine Linux)
+#### cURL Example (Linux Target)
 
 ```bash
 curl -X POST http://localhost:8080/shutdown \
@@ -327,12 +327,12 @@ curl -X POST http://localhost:8080/shutdown \
   -d '{
     "ip": "100.85.120.45",
     "port": "22",
-    "user": "user",
+    "user": "valentin",
     "os": "linux"
   }'
 ```
 
-#### Exemple d'appel cURL (Machine Windows)
+#### cURL Example (Windows Target)
 
 ```bash
 curl -X POST http://localhost:8080/shutdown \
@@ -340,26 +340,26 @@ curl -X POST http://localhost:8080/shutdown \
   -d '{
     "ip": "100.85.120.90",
     "port": "22",
-    "user": "Administrateur",
+    "user": "Administrator",
     "os": "windows"
   }'
 ```
 
-#### Réponses possibles
+#### Responses
 
-- **`200 OK`** : Ordre d'extinction transmis avec succès.
+- **`200 OK`**: Shutdown signal successfully sent.
   ```json
   {
     "message": "Signal d'extinction transmis avec succès vers 100.85.120.45"
   }
   ```
-- **`400 Bad Request`** : Corps de requête manquant ou invalide.
+- **`400 Bad Request`**: Missing required fields or malformed JSON payload.
   ```json
   {
     "message": "Corps de requête invalide"
   }
   ```
-- **`500 Internal Server Error`** : Échec lors de l'exécution de la commande SSH.
+- **`500 Internal Server Error`**: Execution failure when calling Tailscale SSH.
   ```json
   {
     "message": "Échec de l'exécution: Erreur SSH (Exit Code): exit status 1"
@@ -368,45 +368,45 @@ curl -X POST http://localhost:8080/shutdown \
 
 ---
 
-## Structure du Projet
+## Project Structure
 
 ```
 API-WOL/
 ├── cmd/
 │   └── api/
-│       └── main.go                 # Point d'entrée, initialisation du routeur Gin & serveur HTTP
+│       └── main.go                 # Entry point, Gin router setup & HTTP server
 ├── internal/
 │   ├── system/
-│   │   ├── commands.go             # Logique d'exécution de la commande tailscale ssh
-│   │   ├── constants.go            # Commandes système Linux/Windows
-│   │   ├── handler.go              # Contrôleur HTTP pour POST /shutdown
-│   │   └── http_payload.go         # Structure du payload ShutdownPayload
+│   │   ├── commands.go             # Tailscale SSH command execution logic
+│   │   ├── constants.go            # Linux and Windows shutdown command strings
+│   │   ├── handler.go              # HTTP handler for POST /shutdown
+│   │   └── http_payload.go         # ShutdownPayload struct definition
 │   └── wol/
-│       ├── handler.go              # Contrôleur HTTP pour POST /wakeonlan
-│       ├── http_payload.go         # Structure du payload WolPayload
-│       └── sender.go               # Wrapper d'envoi du paquet magique UDP
-├── go.mod                          # Dépendances du module Go
-├── go.sum                          # Checksums des dépendances
-└── README.md                       # Documentation du projet
+│       ├── handler.go              # HTTP handler for POST /wakeonlan
+│       ├── http_payload.go         # WolPayload struct definition
+│       └── sender.go               # UDP Magic Packet sender wrapper
+├── go.mod                          # Go module dependencies
+├── go.sum                          # Module checksums
+└── README.md                       # Project documentation
 ```
 
 ---
 
-## Dépannage & FAQ
+## 🛠 Troubleshooting & FAQ
 
-### 1. La machine ne se réveille pas après un appel `/wakeonlan`
-- **Vérification du BIOS/UEFI** : Assurez-vous que l'option *Wake on LAN* (ou *Power On By PCI-E Device*) est activée.
-- **Paramètres OS (Windows)** : Désactivez le démarrage rapide (*Fast Startup*), car il place la carte réseau dans un état d'hibernation profonde où elle n'écoute plus les Magic Packets.
-- **Sous-réseau de broadcast** : L'API et la machine cible doivent être sur le même réseau local. Le broadcast UDP ne traverse généralement pas les routeurs sans configuration spécifique (ip directed-broadcast).
-- **Format de l'adresse** : Assurez-vous d'avoir fourni l'IP de broadcast terminée par le port (ex. `192.168.1.255:9`).
+### 1. The target machine doesn't wake up after calling `/wakeonlan`
+- **BIOS/UEFI Configuration**: Verify that *Wake on LAN* (or *Power On By PCI-E Device*) is enabled in the BIOS/UEFI settings.
+- **Windows Power Settings**: Disable *Fast Startup* in Windows Control Panel. Fast Startup puts network adapters into an ultra-low power hibernation state where they might not listen for Magic Packets.
+- **Broadcast Subnet**: The API server and the target device must share the same local broadcast domain. Standard routers discard directed UDP broadcast packets crossing subnets unless explicitly configured.
+- **Address Format**: Ensure you included the port in `broadcast_address` (e.g. `192.168.1.255:9`).
 
-### 2. Le shutdown échoue avec une erreur SSH
-- **Vérification de la connectivité Tailscale** : Depuis le serveur de l'API, testez manuellement la commande :
+### 2. Shutdown fails with an SSH error
+- **Tailscale Connectivity**: From the API server terminal, test manual connectivity:
   ```bash
   tailscale ssh <user>@<ip>
   ```
-- **Demande de mot de passe (Linux)** : Si `sudo shutdown` demande un mot de passe, configurez `sudoers` avec `NOPASSWD` comme indiqué dans la section de configuration.
-- **ACL Tailscale** : Vérifiez que l'action SSH dans la console d'administration est bien sur `"action": "accept"` sans check interactif (`checkPeriod: 0s`).
+- **Password Prompt (Linux)**: If `sudo shutdown` requests a password, ensure the `NOPASSWD` rule is properly configured in `/etc/sudoers.d/tailscale-shutdown`.
+- **Tailscale ACL Policy**: Confirm that the Tailscale SSH rule specifies `"action": "accept"` with `"checkPeriod": "0s"` to prevent interactive validation prompts.
 
-### 3. L'API est inaccessible depuis un autre appareil du Tailnet
-Si l'API est démarrée avec `localhost:8080`, elle n'écoute que les requêtes venant de la même machine. Changez le bind dans `cmd/api/main.go` en `0.0.0.0:8080` pour la rendre accessible sur toutes les interfaces (y compris Tailscale).
+### 3. API is unreachable from other Tailnet devices
+If the server starts with `localhost:8080`, it only listens on local loopback. Change the bind string in `cmd/api/main.go` to `0.0.0.0:8080` to accept connections across all network interfaces, including Tailscale.
