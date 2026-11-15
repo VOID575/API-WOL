@@ -3,27 +3,25 @@ package wol
 import (
 	"net"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
-	extwol "github.com/mdlayher/wol"
 )
 
 func WakeOnLan(context *gin.Context) {
-
 	var wolPayload WolPayload
 
-	if err := context.BindJSON(&wolPayload); err != nil {
+	if err := context.ShouldBindJSON(&wolPayload); err != nil {
+		context.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request body"})
 		return
 	}
 
-	client, err := extwol.NewClient()
-	if err != nil {
-		context.JSON(http.StatusInternalServerError, gin.H{"message": "Error initializing the network socket"})
+	if strings.TrimSpace(wolPayload.BroadcastAddress) == "" {
+		context.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request body"})
 		return
 	}
-	defer client.Close()
 
-	parsedMACAdress, err := net.ParseMAC(wolPayload.MACAdress)
+	parsedMACAdress, err := net.ParseMAC(strings.TrimSpace(wolPayload.MACAdress))
 	if err != nil {
 		context.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request body"})
 		return
